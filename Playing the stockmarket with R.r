@@ -1,4 +1,14 @@
 
+# lOOKS LIKE THERE MIGHT BE A CAT() OUTPUTS THAT IS RETURNING NULL - CHECK THIS.
+
+# FOR PLOT OF PERFORMANCE OVER TIME, MAKE THIS FOR OPTIMAL STRATEGY INSTEAD OF JUST TEST STRATEGY LIKE IT CURRENTLY IS. 
+
+# SHOULD I BE USING ADJUSTED PRICE FUNCTION Ad() OR adjustOHLC, AS PER HERE https://www.rdocumentation.org/packages/quantmod/versions/0.4-7/topics/adjustOHLC
+
+# SEE ALSO THIS ANSWER ABOUT POSSIBLE DATA ERRORS AND FIXES: http://quant.stackexchange.com/questions/25521/yahoo-data-meaning-of-close-and-adjusted-close
+
+
+
 #++++++++++++++
 # Temp playing with defining a function that makes numShares bought a function of confidence in pUp
 #++++++++++++++
@@ -75,27 +85,35 @@ library('caret')
 getSymbols('VTI') # get VTI data. This stock is an 'ETF', so tracks whole market. Forbes says it's one of the best (https://www.forbes.com/pictures/hefk45ij/10-best-etfs-for-2016/#321329d67806). 
 cat("Currently trading with VTI - this stock is an ETF, so tracks whole market. It's one of the best. Things to note:\n - Cost of holding 10K of VTI stock for 10yr is $46. This is trivial in scheme of things, so ignoring\n - Yield of this stock is 2%; i.e. if trading at $50 you get a $1 dividend at the end of the year. Believe this means that if stock is increasing at 5% per year it's actual increase is more like 7% (cos you could use that dividend to buy 2% more stocks). I'm also ignoring this, but should factor in later\n - Source: https://www.forbes.com/pictures/hefk45ij/10-best-etfs-for-2016/#321329d67806\n\n")
 
-windows()
-chartSeries(VTI) # plot stock performance over time
-graphics.off()
+# windows()
+# chartSeries(VTI) # plot stock performance over time
+# graphics.off()
 
 warning('Apple shares had massive crash a few years ago - is model going to be able to account for these, or is it too simple? It doesnt account for magnitude of gains or losses at present. E.g. if model tells me direction of shares will be down next day, but I only sell 1 share, and then theres a crash, the model will have predicted correctly but Im still going to lose all my winnings. Do I need to sell/buy much more aggressively?\n')
 
 dates <- index(VTI) # quantmod uses xts format, which requires index() to extract dates
 
 sharesDF <- data.frame(date=dates,  
-                       closePrice=Cl(VTI),
-                       closePriceAfterLag=Next(Cl(VTI), k=lag)) # Cl() & NExt() are helper functions in quantmod... could just calc directly from data (call "AAPL") but this is easier. k is lag size, i.e k=2 would give price 2days thence.
+                       unadjustedClosePriceForPlot=Cl(VTI),
+                       closePrice=Ad(VTI),
+                       closePriceAfterLag=Next(Ad(VTI), k=lag)) # Cl() & NExt() are helper functions in quantmod... could just calc directly from data (call "AAPL") but this is easier. k is lag size, i.e k=2 would give price 2days thence.
+
+windows()
+print(ggplot(sharesDF, aes(date, VTI.Close)) + geom_line() + # df names defined above dont stick - fix below
+        ggtitle('Unadjusted close price across full date range'))
+# graphics.off()
+
+sharesDF <- select(sharesDF, -VTI.Close)
 
 # Data cleaning - xts does funny things with colnames and row labels, so fixing
 rownames(sharesDF) <- NULL
-colnames(sharesDF)[grepl('Close', colnames(sharesDF))] <- 'closePrice'
+colnames(sharesDF)[grepl('Adjusted', colnames(sharesDF))] <- 'closePrice'
 colnames(sharesDF)[grepl('Next', colnames(sharesDF))] <- 'closePriceAfterLag'
 
 # Print info on data Im looking at
 cat(paste0('Extracting data across full available date range: ', min(sharesDF$date), ' to ',  max(sharesDF$date), '\n stock start price: $', round(sharesDF$closePrice[1], 0), ' // starting money: $', startingMoney, ' // propn spent on shares: ', propMoneySpentOnShares, ' // approx num shares bought (based on start price in training cf testing data): ', floor((startingMoney*propMoneySpentOnShares)/sharesDF$closePrice[1]), '\n'))
 
-warning('Just looking at close price for VTI for now, but theres adjusted price, volume etc in the quantmod data too, which could be useful? Could also add in other shares to make my own composite stock price\n')
+cat('Looking at adjusted close price for VTI for now, but theres volume etc in the quantmod data too, which could be useful?\n')
 
 #++++++++++++++
 # Record whether shares went up or down during lag period
@@ -117,11 +135,11 @@ head(sharesDF)
 # Create tweet data, such that numBulls & numBears on a given day will predict whether price goes up or down after lag period
 tweetsDF <- data.frame(date=sharesDF$date,
                        numBulls=floor(ifelse(sharesDF$priceChange=='up',
-                                       rpois(n=nrow(sharesDF), lambda=500) + runif(n=nrow(sharesDF), min=0, max=1000),
-                                       rpois(n=nrow(sharesDF), lambda=100) + runif(n=nrow(sharesDF), min=0, max=1000))),
+                                       rpois(n=nrow(sharesDF), lambda=500) + runif(n=nrow(sharesDF), min=0, max=7000),
+                                       rpois(n=nrow(sharesDF), lambda=100) + runif(n=nrow(sharesDF), min=0, max=7000))),
                        numBears=floor(ifelse(sharesDF$priceChange=='down',
-                                       rpois(n=nrow(sharesDF), lambda=500) + runif(n=nrow(sharesDF), min=0, max=1000),
-                                       rpois(n=nrow(sharesDF), lambda=100) + runif(n=nrow(sharesDF), min=0, max=1000)))) # runif is hack way to add some extra variation and reduce strength of signal
+                                       rpois(n=nrow(sharesDF), lambda=500) + runif(n=nrow(sharesDF), min=0, max=7000),
+                                       rpois(n=nrow(sharesDF), lambda=100) + runif(n=nrow(sharesDF), min=0, max=7000)))) # runif is hack way to add some extra variation and reduce strength of signal
 
 # tweetsDF <- data.frame(date=as.Date(c(NA, sharesDF$date[1:length(sharesDF$date)-1])), # offsetting date by 1d
 #                        numBulls=floor(ifelse(sharesDF$priceChange=='up', 
@@ -145,7 +163,7 @@ plotDF$probPriceChangeUp <- with(plotDF, ifelse(priceChange=='down', 0, 1))
 
 windows()
 ggplot(plotDF, aes(bullToBearRatio, probPriceChangeUp)) + geom_jitter(width=0, alpha=0.5) + geom_smooth()
-graphics.off()
+dev.off()
 
 #__________________________________________________________________________________________________________________________________
 
@@ -196,17 +214,17 @@ sharesDF <- sharesDF[complete.cases(sharesDF),] # NAs introduced by calculating 
 #  .. last training set would be rows 1:xx, second test set would be rows xx:xx
 # See first link above for more details
 
-timeControl <- trainControl(classProbs=TRUE, summaryFunction=twoClassSummary,
+timeControl <- trainControl(# classProbs=TRUE, summaryFunction=twoClassSummary, # want accuracy instead for now
                             method = "timeslice",  # this is better way of calling createTimeSlices function
                             initialWindow = initialWindow, 
                             horizon = horizon,      
                             fixedWindow = TRUE) 
 
 mLR <- train(priceChange ~ bullToBearRatio, data=sharesDF, method="glm", family='binomial', trControl = timeControl)
-
 myFinalModel <- mLR
-finalModelAUC <- mean(myFinalModel$resample$ROC)
-finalModelAUC_stdev <- sd(myFinalModel$resample$ROC)
+
+finalModelAcc <- mean(myFinalModel$resample$Accuracy)
+finalModelAcc_stdev <- sd(myFinalModel$resample$Accuracy)
 
 #++++++++++++++
 # Predict from model on new data
@@ -219,7 +237,7 @@ testdf <- sharesDF[(nrow(sharesDF)-horizon):nrow(sharesDF), ] # I *think* the fi
 plotdf <- mutate(testdf, priceChangeNumeric=ifelse(priceChange=='up', 1, 0))
 windows()
 ggplot(plotdf, aes(probUp, priceChangeNumeric)) + geom_jitter(alpha=0.1)
-graphics.off()
+dev.off()
 
 #__________________________________________________________________________________________________________________________________
 
@@ -403,8 +421,9 @@ numSharesPlot <- ggplot(numSharesDF, aes(date, numSharesBeforeTrading, colour=st
   scale_x_date(date_labels = "%b %d %Y", date_breaks = "1 week")
 
 windows()
-grid.newpage(); grid.draw(rbind(ggplotGrob(numSharesPlot), ggplotGrob(profitsPlot), size = "last")) # plot both together
-graphics.off()
+grid.newpage() 
+print(grid.draw(rbind(ggplotGrob(numSharesPlot), ggplotGrob(profitsPlot), size = "last"))) # plot both together
+# graphics.off()
 
 # investigate any anomalies seen in plot
 # filter(outputdf, date>'2016-07-07')
@@ -470,9 +489,9 @@ finalDifferenceInProfitDF <- mutate(finalDifferenceInProfitDF,
 
 # Plot
 windows()
-ggplot(finalDifferenceInProfitDF, aes(buyThreshold, finalProfitDiff, colour=sellThreshold)) + geom_line() + 
-  facet_wrap(~numSharesToBuyOrSell)
-graphics.off()
+print(ggplot(finalDifferenceInProfitDF, aes(buyThreshold, finalProfitDiff, colour=sellThreshold)) + geom_line() + 
+  facet_wrap(~numSharesToBuyOrSell))
+# graphics.off()
 
 ### PLOT FINAL DIFFERENCE IN PROFIT BETWEEN MODEL & BASELINE STRATEGIES
 # Change some plotting vars to factors, for better ggplotting
@@ -482,9 +501,9 @@ finalAbsoluteProfitDF <- mutate(finalAbsoluteProfitDF,
 
 # Plot
 windows()
-ggplot(finalAbsoluteProfitDF, aes(buyThreshold, finalProfit, colour=sellThreshold)) + geom_line() + 
-  facet_wrap(~numSharesToBuyOrSell)
-graphics.off()
+print(ggplot(finalAbsoluteProfitDF, aes(buyThreshold, finalProfit, colour=sellThreshold)) + geom_line() + 
+  facet_wrap(~numSharesToBuyOrSell))
+# graphics.off()
 
 #++++++++++++++
 # Print some final info about best performing model
@@ -497,7 +516,7 @@ profitDiff_bestParams <- filter(finalDifferenceInProfitDF, sellThreshold==bestPa
 annualisedReturn_bestParams <- round(((bestParams$finalProfit+startingMoney)/startingMoney^(365/horizon)-1)*100, 1)
 annualisedReturn_baseline <- round((((bestParams$finalProfit-profitDiff_bestParams)+startingMoney)/startingMoney^(365/horizon)-1)*100, 1)
 
-cat(paste0('Outputs based on a model with AUC of ', round(finalModelAUC, 2), '+', round(finalModelAUC_stdev, 2), 'SD\nBest parameters: buyThreshold=', bestParams$buyThreshold, ' sellThreshold=', bestParams$sellThreshold, ' numSharesToSell=', bestParams$numSharesToBuyOrSell, '\n - this resulted in a total profit of $', bestParams$finalProfit, ' after ', horizon, ' days, vs baseline strategy profit of $', bestParams$finalProfit-profitDiff_bestParams, ' under same params\n - this is an annualised return of ', annualisedReturn_bestParams,'% and ', annualisedReturn_baseline, '% per year, respectively\n'))
+cat(paste0('Outputs based on a model with Accuracy of ', round(finalModelAcc, 2), '+', round(finalModelAcc_stdev, 2), 'SD\nBest parameters: buyThreshold=', bestParams$buyThreshold, ' sellThreshold=', bestParams$sellThreshold, ' numSharesToSell=', bestParams$numSharesToBuyOrSell, '\n - this resulted in a total profit of $', bestParams$finalProfit, ' after ', horizon, ' days, vs baseline strategy profit of $', bestParams$finalProfit-profitDiff_bestParams, ' under same params\n - this is an annualised return of ', annualisedReturn_bestParams,'% and ', annualisedReturn_baseline, '% per year, respectively\n'))
 (bestParams$finalProfit+startingMoney)/startingMoney^(365/horizon)-1
 
 # #++++++++++++++
