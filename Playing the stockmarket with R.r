@@ -1,12 +1,9 @@
 
-# lOOKS LIKE THERE MIGHT BE A CAT() OUTPUTS THAT IS RETURNING NULL - CHECK THIS.
+# NEED TO DO BETTER NESTED RESAMPLING TO ESTIMATE FIRST STRATEGY PARAMS, AND SECOND MODEL PERFORMANCE, WITHOUT OVERFITTING.
+# - currently use createTimeSlices to train model, then once model is fitted try different params on a single year's worth of data and then measure performance using those params on the same set of data. 
+# - But this is poo! Should be doing timeslice version of nested resampling: (1) fit model on inner slice, (2) find best strategy params on middle slice, (3) test strategy params on outer slice (or something). Aim would be to repeat each step on multiple slices, so that the strategy param that performed best across multiple slices could be chosen, and so that the performance *and variance in performance* using the best strategy params could be measured on independent data.
 
-# FOR PLOT OF PERFORMANCE OVER TIME, MAKE THIS FOR OPTIMAL STRATEGY INSTEAD OF JUST TEST STRATEGY LIKE IT CURRENTLY IS. 
-
-# SHOULD I BE USING ADJUSTED PRICE FUNCTION Ad() OR adjustOHLC, AS PER HERE https://www.rdocumentation.org/packages/quantmod/versions/0.4-7/topics/adjustOHLC
-
-# SEE ALSO THIS ANSWER ABOUT POSSIBLE DATA ERRORS AND FIXES: http://quant.stackexchange.com/questions/25521/yahoo-data-meaning-of-close-and-adjusted-close
-
+# SHOULD I BE USING ADJUSTED PRICE FUNCTION Ad() OR adjustOHLC, AS PER HERE https://www.rdocumentation.org/packages/quantmod/versions/0.4-7/topics/adjustOHLC  SEE ALSO THIS ANSWER ABOUT POSSIBLE DATA ERRORS AND FIXES: http://quant.stackexchange.com/questions/25521/yahoo-data-meaning-of-close-and-adjusted-close & http://quant.stackexchange.com/questions/7216/daily-returns-using-adjusted-close
 
 
 #++++++++++++++
@@ -62,11 +59,11 @@ numSharesToBuyOrSellVec <- c(1, 5, 15) # if above threshold, buy x shares; if be
 warning('Havent sorted lag yet for lag>1. Stock price is correctly lagged, but Im still trading each day rather than every [lag] days, which is what I think I should be doing. Need to investigate\n')
 
 set.seed(0803)
-library('quantmod')
+suppressMessages(library('quantmod'))
 suppressMessages(library('dplyr'))
 suppressMessages(library('ggplot2'))
-library('grid')
-library('caret')
+suppressMessages(library('grid'))
+suppressMessages(library('caret'))
 
 #__________________________________________________________________________________________________________________________________
 
@@ -83,7 +80,7 @@ library('caret')
 # head(oaDF)
 
 getSymbols('VTI') # get VTI data. This stock is an 'ETF', so tracks whole market. Forbes says it's one of the best (https://www.forbes.com/pictures/hefk45ij/10-best-etfs-for-2016/#321329d67806). 
-cat("Currently trading with VTI - this stock is an ETF, so tracks whole market. It's one of the best. Things to note:\n - Cost of holding 10K of VTI stock for 10yr is $46. This is trivial in scheme of things, so ignoring\n - Yield of this stock is 2%; i.e. if trading at $50 you get a $1 dividend at the end of the year. Believe this means that if stock is increasing at 5% per year it's actual increase is more like 7% (cos you could use that dividend to buy 2% more stocks). I'm also ignoring this, but should factor in later\n - Source: https://www.forbes.com/pictures/hefk45ij/10-best-etfs-for-2016/#321329d67806\n\n")
+cat("Currently trading with VTI - this stock is an ETF, so tracks whole market. It's one of the best. Things to note:\n - Cost of holding 10K of VTI stock for 10yr is $46. This is trivial in scheme of things, so ignoring\n - Yield of this stock is 2%; i.e. if trading at $50 you get a $1 dividend at the end of the year. Believe this means that if stock is increasing at 5% per year it's actual increase is more like 7% (cos you could use that dividend to buy 2% more stocks). I'm also ignoring this [what about if I'm using adjusted price tho?], but should factor in later\n - Source: https://www.forbes.com/pictures/hefk45ij/10-best-etfs-for-2016/#321329d67806\n\n")
 
 # windows()
 # chartSeries(VTI) # plot stock performance over time
@@ -98,9 +95,14 @@ sharesDF <- data.frame(date=dates,
                        closePrice=Ad(VTI),
                        closePriceAfterLag=Next(Ad(VTI), k=lag)) # Cl() & NExt() are helper functions in quantmod... could just calc directly from data (call "AAPL") but this is easier. k is lag size, i.e k=2 would give price 2days thence.
 
+closePricePlot <- ggplot(sharesDF, aes(date, VTI.Close)) + geom_line(colour='light green') + # df names defined above dont stick - fix below
+  ggtitle('Unadjusted close price across full date range')
+adjClosePricePlot <- ggplot(sharesDF, aes(date, VTI.Adjusted)) + geom_line(colour='light green') +
+  ggtitle('Adjusted close price across full date range')
+
 windows()
-print(ggplot(sharesDF, aes(date, VTI.Close)) + geom_line() + # df names defined above dont stick - fix below
-        ggtitle('Unadjusted close price across full date range'))
+grid.newpage() 
+grid.draw(rbind(ggplotGrob(closePricePlot), ggplotGrob(adjClosePricePlot), size = "last")) # plot both together
 # graphics.off()
 
 sharesDF <- select(sharesDF, -VTI.Close)
@@ -113,7 +115,7 @@ colnames(sharesDF)[grepl('Next', colnames(sharesDF))] <- 'closePriceAfterLag'
 # Print info on data Im looking at
 cat(paste0('Extracting data across full available date range: ', min(sharesDF$date), ' to ',  max(sharesDF$date), '\n stock start price: $', round(sharesDF$closePrice[1], 0), ' // starting money: $', startingMoney, ' // propn spent on shares: ', propMoneySpentOnShares, ' // approx num shares bought (based on start price in training cf testing data): ', floor((startingMoney*propMoneySpentOnShares)/sharesDF$closePrice[1]), '\n'))
 
-cat('Looking at adjusted close price for VTI for now, but theres volume etc in the quantmod data too, which could be useful?\n')
+warning('Looking at adjusted close price for VTI for now, but theres volume etc in the quantmod data too, which could be useful?\n')
 
 #++++++++++++++
 # Record whether shares went up or down during lag period
@@ -244,7 +246,7 @@ dev.off()
 # Write monster function that takes test data with model-predicted probabilities, makes a decision about whether to buy vs sell based on params, then returns df that tracks financial outcome of model-predicted vs baseline strategy for each day's trade----
 #__________________________________________________________________________________________________________________________________
 
-cat("Recording financial outcome of applying decision: '\n - Buy/sell at end of day (close of business or 'COB'); i.e. dollars spent/earned are based on that day's closePrice. \n - After buying/selling, shares then change value over next [lag] days, and share value is calculated as numShares at COB (after buying/selling) times their value right before COB after [lag] days, i.e. right before buying or selling again. \n - Money value is also calcuated right before COB after [lag] days, but is assumed to stay at same value between COB and COB after [lag] days (could change to match real interest rate - would be sitting in loan offset account so interest is equivalent to home loan interest rate I believe), whereas share price changes.\n - If run out of $ or shares then have to wait until model says sell or buy so until have enough $ / shares to complete next buy/sell. Code prints a message saying that this has happened\n")
+cat("\nRecording financial outcome of applying decision: '\n - Buy/sell at end of day (close of business or 'COB'); i.e. dollars spent/earned are based on that day's closePrice. \n - After buying/selling, shares then change value over next [lag] days, and share value is calculated as numShares at COB (after buying/selling) times their value right before COB after [lag] days, i.e. right before buying or selling again. \n - Money value is also calcuated right before COB after [lag] days, but is assumed to stay at same value between COB and COB after [lag] days (could change to match real interest rate - would be sitting in loan offset account so interest is equivalent to home loan interest rate I believe), whereas share price changes.\n - If run out of $ or shares then have to wait until model says sell or buy so until have enough $ / shares to complete next buy/sell:\n")
   
 tradingOutcomeFun <- function(startingMoney, propMoneySpentOnShares, buyThreshold, sellThreshold, 
                               numSharesToBuyOrSell, transactionCost){ # currently uses testdf as input, could make this a param tho. Also haven't added in lag yet - do I need to?
@@ -287,11 +289,13 @@ tradingOutcomeFun <- function(startingMoney, propMoneySpentOnShares, buyThreshol
   
   row1 <- testdf[1, ]
   
+  warningsVec <- vector() # record info about how many times ran out of $ or stocks
+  
   # If elses to apply different buying rules depending on whether there's enough money to buy or enough stocks to sell:
   if(row1$decision=='buy'){ # if buying, test whether enough money to buy stocks; if not dont buy and issue warning.
     
     if(row1$closePrice>row1$moneyBeforeTrading){
-      # cat('insufficient funds to make trade at row 1\n')
+      warningsVec[length(warningsVec)+1] <- 'insufficient funds to make trade at row 1'
       row1$moneyInOrOut <- 0
       row1$numSharesAfterTrading <- row1$numSharesBeforeTrading
     } else {
@@ -301,7 +305,7 @@ tradingOutcomeFun <- function(startingMoney, propMoneySpentOnShares, buyThreshol
   } else if(row1$decision=='sell'){ # if selling, test enough stocks availalbe; if not dont sell and issue warning.
     
     if(row1$numSharesBeforeTrading<numSharesToBuyOrSell){
-      # cat('insufficient shares to make trade at row 1\n')
+      warningsVec[length(warningsVec)+1] <- 'insufficient shares to make trade at row 1'
       row1$moneyInOrOut <- 0
       row1$numSharesAfterTrading <- row1$numSharesBeforeTrading
     } else {
@@ -334,7 +338,7 @@ tradingOutcomeFun <- function(startingMoney, propMoneySpentOnShares, buyThreshol
     if(row_iPlus1$decision=='buy'){ # if buying, test whether enough money to buy stocks; if not dont buy and issue warning.
       
       if(row_iPlus1$closePrice>row_iPlus1$moneyBeforeTrading){
-        # cat(paste0('insufficient funds to make trade at row ', i+1, '; cant buy until after next time decision=="sell" & funds get bumped up\n'))
+        warningsVec[length(warningsVec)+1] <- paste0('insufficient funds to make trade at row ', i+1, '; cant buy until after next time decision=="sell" & funds get bumped up')
         row_iPlus1$moneyInOrOut <- 0
         row_iPlus1$numSharesAfterTrading <- row_iPlus1$numSharesBeforeTrading
       } else {
@@ -344,7 +348,7 @@ tradingOutcomeFun <- function(startingMoney, propMoneySpentOnShares, buyThreshol
     } else if(row_iPlus1$decision=='sell'){ # if selling, test enough stocks availalbe; if not dont sell and issue warning.
       
       if(row_iPlus1$numSharesBeforeTrading<numSharesToBuyOrSell){
-        # cat(paste0('insufficient shares to make trade at row ', i+1, '; cant sell until after next time decision=="buy"\n'))
+        warningsVec[length(warningsVec)+1] <- paste0('insufficient shares to make trade at row ', i+1, '; cant sell until after next time decision=="buy"')
         row_iPlus1$moneyInOrOut <- 0
         row_iPlus1$numSharesAfterTrading <- row_iPlus1$numSharesBeforeTrading
       } else {
@@ -385,48 +389,48 @@ tradingOutcomeFun <- function(startingMoney, propMoneySpentOnShares, buyThreshol
   testdf$profit_baseline <- round(testdf$totalAssetsBeforeNextTrade_baseline-startingMoney, 2)
   
   # head(testdf, 2)
+  cat("   ", length(warningsVec[grepl('insufficient funds', warningsVec)]), "trades ran out of money and", length(warningsVec[grepl('insufficient shares', warningsVec)]), "trades ran out of stock during simulation\n")
   return(testdf)
 }
-cat("NB function above prints warnings if I run out of stocks/money, but Ive hashed these warnings out - was 1 per row, which was too many. In future collect into a single line that says 'x trades ran out of money and y trades ran out of stock'\n")
 
-#++++++++++++++
-# Test function
-#++++++++++++++
-  
-outputdf <- tradingOutcomeFun(startingMoney=10000, propMoneySpentOnShares=0.75, buyThreshold=0.6, sellThreshold=0.4,
-                              numSharesToBuyOrSell=50, transactionCost=0)
-
-#++++++++++++++
-# Plot profit from this strategy vs just holding on to stock (also plotting numShares at same time)
-#++++++++++++++
-
-profitsDF <- bind_rows(outputdf %>% 
-                      select(date, profit) %>%
-                      mutate(strategy='Model-based buy & sell'),
-                    outputdf %>%
-                      select(date=date, profit=profit_baseline) %>%
-                      mutate(strategy='Baseline (Hold shares & money)'))
-numSharesDF <- bind_rows(outputdf %>% 
-                       select(date, numSharesBeforeTrading) %>%
-                       mutate(strategy='Model-based buy & sell'),
-                     outputdf %>%
-                       select(date=date) %>%
-                       mutate(numSharesBeforeTrading=outputdf$numSharesBeforeTrading[1], strategy='Baseline (Hold shares & money)'))
-
-profitsPlot <- ggplot(profitsDF, aes(date, profit, colour=strategy)) + geom_line() + 
-  theme(axis.text.x = element_text(angle = 90, hjust = 1))  + 
-  scale_x_date(date_labels = "%b %d %Y", date_breaks = "1 week")
-numSharesPlot <- ggplot(numSharesDF, aes(date, numSharesBeforeTrading, colour=strategy)) + geom_line() + 
-  ylim(0, max(numSharesDF$numSharesBeforeTrading*1.5)) + theme(axis.text.x = element_text(angle = 90, hjust = 1))  + 
-  scale_x_date(date_labels = "%b %d %Y", date_breaks = "1 week")
-
-windows()
-grid.newpage() 
-print(grid.draw(rbind(ggplotGrob(numSharesPlot), ggplotGrob(profitsPlot), size = "last"))) # plot both together
-# graphics.off()
-
-# investigate any anomalies seen in plot
-# filter(outputdf, date>'2016-07-07')
+# #++++++++++++++
+# # Test function
+# #++++++++++++++
+#   
+# outputdf <- tradingOutcomeFun(startingMoney=10000, propMoneySpentOnShares=0.75, buyThreshold=0.6, sellThreshold=0.4,
+#                               numSharesToBuyOrSell=50, transactionCost=0)
+# 
+# #++++++++++++++
+# # Plot profit from this strategy vs just holding on to stock (also plotting numShares at same time)
+# #++++++++++++++
+# 
+# profitsDF <- bind_rows(outputdf %>% 
+#                       select(date, profit) %>%
+#                       mutate(strategy='Model-based buy & sell'),
+#                     outputdf %>%
+#                       select(date=date, profit=profit_baseline) %>%
+#                       mutate(strategy='Baseline (Hold shares & money)'))
+# numSharesDF <- bind_rows(outputdf %>% 
+#                        select(date, numSharesBeforeTrading) %>%
+#                        mutate(strategy='Model-based buy & sell'),
+#                      outputdf %>%
+#                        select(date=date) %>%
+#                        mutate(numSharesBeforeTrading=outputdf$numSharesBeforeTrading[1], strategy='Baseline (Hold shares & money)'))
+# 
+# profitsPlot <- ggplot(profitsDF, aes(date, profit, colour=strategy)) + geom_line() + 
+#   theme(axis.text.x = element_text(angle = 90, hjust = 1))  + 
+#   scale_x_date(date_labels = "%b %d %Y", date_breaks = "1 week")
+# numSharesPlot <- ggplot(numSharesDF, aes(date, numSharesBeforeTrading, colour=strategy)) + geom_line() + 
+#   ylim(0, max(numSharesDF$numSharesBeforeTrading*1.5)) + theme(axis.text.x = element_text(angle = 90, hjust = 1))  + 
+#   scale_x_date(date_labels = "%b %d %Y", date_breaks = "1 week")
+# 
+# windows()
+# grid.newpage() 
+# grid.draw(rbind(ggplotGrob(numSharesPlot), ggplotGrob(profitsPlot), size = "last")) # plot both together
+# # graphics.off()
+# 
+# # investigate any anomalies seen in plot
+# # filter(outputdf, date>'2016-07-07')
 
 #__________________________________________________________________________________________________________________________________
 
@@ -477,7 +481,7 @@ finalAbsoluteProfitDF <- finalAbsoluteProfitDF[2:nrow(finalAbsoluteProfitDF), ] 
 # filter(finalDifferenceInProfitDF, buyThreshold==1 & sellThreshold==0) # Good sanity check - profit diff should be zero, because with these params you never buy or sell (same strategy as baseline).
 
 #++++++++++++++
-# Plot outputs - final profit, and final difference in profit vs baseline
+# Plot outputs - final profit, and final difference in profit vs baseline, for diff param values
 #++++++++++++++
 
 ### PLOT FINAL DIFFERENCE IN PROFIT BETWEEN MODEL & BASELINE STRATEGIES
@@ -513,29 +517,52 @@ bestParams <- filter(finalAbsoluteProfitDF, finalProfit==max(finalProfit))
 profitDiff_bestParams <- filter(finalDifferenceInProfitDF, sellThreshold==bestParams$sellThreshold, 
                                 buyThreshold==bestParams$buyThreshold, 
                                 numSharesToBuyOrSell==bestParams$numSharesToBuyOrSell) $finalProfitDiff
-annualisedReturn_bestParams <- round(((bestParams$finalProfit+startingMoney)/startingMoney^(365/horizon)-1)*100, 1)
-annualisedReturn_baseline <- round((((bestParams$finalProfit-profitDiff_bestParams)+startingMoney)/startingMoney^(365/horizon)-1)*100, 1)
+annualisedReturn_bestParams <- round(((bestParams$finalProfit+startingMoney)/startingMoney^(365/horizon)-1)*100, 0)
+annualisedReturn_baseline <- round((((bestParams$finalProfit-profitDiff_bestParams)+startingMoney)/startingMoney^(365/horizon)-1)*100, 0)
 
-cat(paste0('Outputs based on a model with Accuracy of ', round(finalModelAcc, 2), '+', round(finalModelAcc_stdev, 2), 'SD\nBest parameters: buyThreshold=', bestParams$buyThreshold, ' sellThreshold=', bestParams$sellThreshold, ' numSharesToSell=', bestParams$numSharesToBuyOrSell, '\n - this resulted in a total profit of $', bestParams$finalProfit, ' after ', horizon, ' days, vs baseline strategy profit of $', bestParams$finalProfit-profitDiff_bestParams, ' under same params\n - this is an annualised return of ', annualisedReturn_bestParams,'% and ', annualisedReturn_baseline, '% per year, respectively\n'))
-(bestParams$finalProfit+startingMoney)/startingMoney^(365/horizon)-1
+cat(paste0('\nOutputs based on a model with Accuracy of ', round(finalModelAcc, 2), '+', round(finalModelAcc_stdev, 2), 'SD\nBest parameters: buyThreshold=', bestParams$buyThreshold, ' sellThreshold=', bestParams$sellThreshold, ' numSharesToSell=', bestParams$numSharesToBuyOrSell, '\n - this resulted in a total profit of $', round(bestParams$finalProfit, 0), ' after ', horizon, ' days, vs baseline strategy profit of $', round(bestParams$finalProfit-profitDiff_bestParams, 0), ' under same params\n - this is an annualised return of ', annualisedReturn_bestParams,'% and ', annualisedReturn_baseline, '% per year, respectively\n'))
 
-# #++++++++++++++
-# # And can look at individual parameter combos by inputting those values into function, and plotting
-# #++++++++++++++
-# 
-# outputdf <- tradingOutcomeFun(startingMoney=startingMoney, propMoneySpentOnShares=propMoneySpentOnShares, 
-#                               transactionCost=transactionCost,
-#                               buyThreshold=0.6, sellThreshold=0.4, numSharesToBuyOrSell=50)
-# plotDF <- bind_rows(outputdf %>% 
-#                          select(date, profit) %>%
-#                          mutate(strategy='Model-based buy & sell'),
-#                        outputdf %>%
-#                          select(date=date, profit=profit_baseline) %>%
-#                          mutate(strategy='Baseline (Hold shares & money)'))
-# windows()
-# ggplot(profitsDF, aes(date, profit, colour=strategy)) + geom_line() + 
-#   theme(axis.text.x = element_text(angle = 90, hjust = 1))  + 
-#   scale_x_date(date_labels = "%b %d %Y", date_breaks = "1 week")
+
+#++++++++++++++
+# Plot performance over time for optimal param values 
+#++++++++++++++
+
+optDF <- tradingOutcomeFun(startingMoney=startingMoney, propMoneySpentOnShares=propMoneySpentOnShares, 
+                           transactionCost=transactionCost, 
+                           buyThreshold=bestParams$buyThreshold, 
+                           sellThreshold=as.numeric(as.character(bestParams$sellThreshold)), # factorised for plot above
+                           numSharesToBuyOrSell=as.numeric(
+                             as.character(gsub("sharesTradedPerTrade", "", bestParams$numSharesToBuyOrSell))))
+
+#++++++++++++++
+# Plot profit from this strategy vs just holding on to stock (also plotting numShares at same time)
+#++++++++++++++
+
+profitsDF <- bind_rows(optDF %>% 
+                         select(date, profit) %>%
+                         mutate(strategy='Model-based buy & sell'),
+                       optDF %>%
+                         select(date=date, profit=profit_baseline) %>%
+                         mutate(strategy='Baseline (Hold shares & money)'))
+numSharesDF <- bind_rows(optDF %>% 
+                           select(date, numSharesBeforeTrading) %>%
+                           mutate(strategy='Model-based buy & sell'),
+                         optDF %>%
+                           select(date=date) %>%
+                           mutate(numSharesBeforeTrading=optDF$numSharesBeforeTrading[1], strategy='Baseline (Hold shares & money)'))
+
+profitsPlot <- ggplot(profitsDF, aes(date, profit, colour=strategy)) + geom_line() + 
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+numSharesPlot <- ggplot(numSharesDF, aes(date, numSharesBeforeTrading, colour=strategy)) + geom_line() + 
+  ylim(0, max(numSharesDF$numSharesBeforeTrading*1.5)) + theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+windows()
+grid.newpage() 
+grid.draw(rbind(ggplotGrob(numSharesPlot), ggplotGrob(profitsPlot), size = "last")) # plot both together
 # graphics.off()
 
+# investigate any anomalies seen in plot
+# filter(outputdf, date>'2016-07-07')
+
 gc()
+
